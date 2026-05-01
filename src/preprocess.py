@@ -78,7 +78,7 @@ def aug_zoom_in(img, scale_range=(1.2, 1.8)):
     zoomed = cv2.resize(cropped, (w, h), interpolation=cv2.INTER_LINEAR)
     
     transform_info = {
-        "type": "crop_resize",
+        "type": "zoom_in",
         "x_offset": x_offset,
         "y_offset": y_offset,
         "scale_x": w / new_w,
@@ -95,11 +95,11 @@ def aug_scale_down(img, scale_range=(0.5, 0.9)):
     scaled = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_AREA)
     
     transform_info = {
-        "type": "crop_resize",
+        "type": "scale_down",
         "x_offset": 0,
         "y_offset": 0,
-        "scale_x": new_w / w,
-        "scale_y": new_h / h
+        "scale_x": w / new_w,   # > 1, ví dụ 1/0.6 ≈ 1.67
+        "scale_y": h / new_h
     }
     return scaled, transform_info
 
@@ -151,11 +151,43 @@ AUGMENTATIONS = {
     "background_clutter": lambda img: aug_background_clutter(img),
     "occlusion": lambda img: aug_occlusion(img, occ_ratio_range=(0.05, 0.15)),
 }
+AUGMENTATIONS_STRICT = {
+    "original": lambda img: img.copy(),
+    "median_blur": lambda img: cv2.medianBlur(img, 5),
+    "clahe_sharp": lambda img: aug_clahe_gamma_sharp(img),
+    "high_contrast": lambda img: cv2.convertScaleAbs(img, alpha=1.8, beta=-40),
+    "low_contrast": lambda img: cv2.convertScaleAbs(img, alpha=0.5, beta=50),
+    "bright_over": lambda img: cv2.convertScaleAbs(img, alpha=4.2, beta=175),
+    "dark_under": lambda img: cv2.convertScaleAbs(img, alpha=0.2, beta=-100),
+    "noise_gauss": lambda img: aug_gaussian_noise(img),
+    "dilate": lambda img: aug_dilation(img),
+    "erode": lambda img: aug_erosion(img),
+    "heavy_blur": lambda img: cv2.GaussianBlur(img, (9, 9), 0),
+    "motion_blur": lambda img: aug_motion_blur(img, ksize=11),
+}
 
 def generate_augmented_images(image_bgr):
     """Trả về một dictionary chứa cấu trúc chuẩn: {"image": img, "transform_info": info}"""
     aug_images = {}
     for name, func in AUGMENTATIONS.items():
+        result = func(image_bgr.copy())
+        
+        if isinstance(result, tuple):
+            img, t_info = result
+        else:
+            img = result
+            t_info = None # Các phép biến đổi màu sắc/mờ không làm thay đổi tọa độ
+            
+        aug_images[name] = {
+            "image": img,
+            "transform_info": t_info
+        }
+    return aug_images
+
+def generate_augmented_images_strict(image_bgr):
+    """Trả về một dictionary chứa cấu trúc chuẩn: {"image": img, "transform_info": info}"""
+    aug_images = {}
+    for name, func in AUGMENTATIONS_STRICT.items():
         result = func(image_bgr.copy())
         
         if isinstance(result, tuple):

@@ -20,30 +20,47 @@ def build_loose_candidate_proposer():
 
 def map_corners_to_original(corners, transform_info):
     if transform_info is None or "type" not in transform_info:
-        return corners
+        return corners.copy()
 
     aug_type = transform_info["type"]
-
+    
     if aug_type == "matrix":
         M_inv = transform_info["M_inv"]
-        # Đảm bảo array contiguous và là kiểu float32 để tránh lỗi ngầm của OpenCV
-        corners_reshaped = np.ascontiguousarray(corners, dtype=np.float32).reshape(-1, 1, 2)
-        corners_mapped = cv2.perspectiveTransform(corners_reshaped, M_inv)
+        corners_reshaped = np.ascontiguousarray(
+            corners,
+            dtype=np.float32
+        ).reshape(-1, 1, 2)
+        corners_mapped = cv2.perspectiveTransform(
+            corners_reshaped,
+            M_inv
+        )
         return corners_mapped.reshape(4, 2)
-
-    elif aug_type == "crop_resize":
+    
+    elif aug_type == "zoom_in":
         x_offset = transform_info["x_offset"]
         y_offset = transform_info["y_offset"]
         scale_x = transform_info["scale_x"]
         scale_y = transform_info["scale_y"]
-        
         corners_mapped = np.copy(corners).astype(np.float32)
-        corners_mapped[:, 0] /= scale_x
-        corners_mapped[:, 1] /= scale_y
-        corners_mapped[:, 0] += x_offset
-        corners_mapped[:, 1] += y_offset
+        corners_mapped[:, 0] = (
+            corners_mapped[:, 0] / scale_x
+        ) + x_offset
+        corners_mapped[:, 1] = (
+            corners_mapped[:, 1] / scale_y
+        ) + y_offset
         return corners_mapped
-
+    
+    elif aug_type == "scale_down":
+        scale_x = transform_info["scale_x"]
+        scale_y = transform_info["scale_y"]
+        corners_mapped = np.copy(corners).astype(np.float32)
+        corners_mapped[:, 0] = (
+            corners_mapped[:, 0] * scale_x
+        )
+        corners_mapped[:, 1] = (
+            corners_mapped[:, 1] * scale_y
+        )
+        return corners_mapped
     return corners
 
 def extract_candidates(image_bgr, aug_images_dict):
@@ -74,7 +91,7 @@ def extract_candidates(image_bgr, aug_images_dict):
                 
                 all_candidates.append({
                     "corners": curr_corners,
-                    "corners_raw": raw_c,
+                    "raw_corners": raw_c,
                     "source": aug_name,
                     "type": c_type
                 })
@@ -119,7 +136,7 @@ def filter_and_cluster_candidates(all_candidates, dist_thresh=2, min_votes=1):
                     cluster["source"] = cand.get("source")
                     cluster["type"] = cand.get("type")
                     cluster["best_corners"] = corners
-                    cluster["raw_corners"] = cand.get("corners_raw")
+                    cluster["raw_corners"] = cand.get("raw_corners")
                 matched = True
                 break
         
@@ -128,7 +145,7 @@ def filter_and_cluster_candidates(all_candidates, dist_thresh=2, min_votes=1):
                 "top_left": top_left,
                 "count": 1,
                 "best_corners": corners,
-                "raw_corners": cand.get("corners_raw"),
+                "raw_corners": cand.get("raw_corners"),
                 "source": cand.get("source"),
                 "type": cand.get("type", "rejected")
             })

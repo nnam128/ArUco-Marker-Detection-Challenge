@@ -10,6 +10,7 @@ PATCH_SIZE = 64
 WARP_SIZE = 64
 CNN_THRESHOLD = 0.5
 PADDING = 10
+PADDING_RATIO = 0.3
 
 
 def load_cnn_model(model_path=MODEL_PATH):
@@ -20,7 +21,7 @@ def load_cnn_model(model_path=MODEL_PATH):
 
 
 def order_corners(pts):
-    pts = np.array(pts, dtype=np.float32)
+    pts = normalize_corners(pts)
 
     s = pts.sum(axis=1)
     diff = np.diff(pts, axis=1)
@@ -92,21 +93,22 @@ def is_real_marker_consistent(model, image, cand, threshold=0.5):
     CNN prediction nhưng đảm bảo input giống training distribution
     """
 
-    aug_dict = build_augmented_context(image)
+    return is_real_marker(model, image, cand["corners"], threshold=threshold)
 
-    target_img = get_cnn_input_image(
-        cand,
-        aug_dict,
-        fallback_image=image
-    )
+def normalize_corners(corners):
+    corners = np.array(corners)
 
-    return is_real_marker(
-        model,
-        target_img,
-        cand["corners"],
-        threshold=threshold
-    )
+    # case OpenCV: (1,4,2)
+    if corners.shape == (1, 4, 2):
+        corners = corners[0]
 
+    # case weird nested list
+    corners = np.squeeze(corners)
+
+    if corners.shape != (4, 2):
+        raise ValueError(f"Invalid corners shape: {corners.shape}")
+
+    return corners.astype(np.float32)
 
 def is_real_marker(model, image, corners, threshold=CNN_THRESHOLD):
     patch = prepare_patch_for_cnn(image, corners)
@@ -118,39 +120,112 @@ def is_real_marker(model, image, corners, threshold=CNN_THRESHOLD):
 
 def create_roi_with_padding(image, corners, padding=PADDING):
     h, w = image.shape[:2]
-    pts = order_corners(corners)
+    pts = normalize_corners(corners)
+    
+    marker_w = np.max(pts[:, 0]) - np.min(pts[:, 0])
+    marker_h = np.max(pts[:, 1]) - np.min(pts[:, 1])
+    
+    padding = max(PADDING, int(min(marker_w, marker_h) * PADDING_RATIO))
 
-    x_min = max(int(np.min(pts[:, 0])) - padding, 0)
-    y_min = max(int(np.min(pts[:, 1])) - padding, 0)
-    x_max = min(int(np.max(pts[:, 0])) + padding, w)
-    y_max = min(int(np.max(pts[:, 1])) + padding, h)
-
+    # floor/ceil để cover toàn bộ vùng sub-pixel
+    x_min = max(int(np.floor(np.min(pts[:, 0]) - padding)), 0)
+    y_min = max(int(np.floor(np.min(pts[:, 1]) - padding)), 0)
+    x_max = min(int(np.ceil(np.max(pts[:, 0]) + padding)), w)
+    y_max = min(int(np.ceil(np.max(pts[:, 1]) + padding)), h)
+    
+    
     roi = image[y_min:y_max, x_min:x_max].copy()
-
+    
     return roi, x_min, y_min
 
-
-# =========================================================
 # STRICT ARUCO DETECTION
-# =========================================================
-def strict_detect_aruco(roi):
+def strict_detect_aruco(roi, refine_method=cv2.aruco.CORNER_REFINE_SUBPIX, for_roi=False):
     dictionary = cv2.aruco.getPredefinedDictionary(
-        cv2.aruco.DICT_4X4_50
+        cv2.aruco.DICT_ARUCO_MIP_36H12
     )
 
     params = cv2.aruco.DetectorParameters()
 
-    # stricter settings
-    params.minMarkerPerimeterRate = 0.05
+    # refine góc
+    params.cornerRefinementMethod = refine_method
+    
+
+    # adaptive threshold
+    params.adaptiveThreshWinSizeMin = 5
+    params.adaptiveThreshWinSizeMax = 31
+    params.adaptiveThreshWinSizeStep = 4
+    params.adaptiveThreshConstant = 5
+
+    # lọc candidate chặt hơn
+    params.minMarkerPerimeterRate = 0.03
     params.maxMarkerPerimeterRate = 4.0
-    params.polygonalApproxAccuracyRate = 0.03
+    params.polygonalApproxAccuracyRate = 0.05
     params.minCornerDistanceRate = 0.05
-    params.minDistanceToBorder = 5
-    params.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_SUBPIX
+    params.minDistanceToBorder = 0
+
+    # decode chặt hơn
+    params.minOtsuStdDev = 5.0
+    params.errorCorrectionRate = 0.01
+
 
     detector = cv2.aruco.ArucoDetector(dictionary, params)
     corners, ids, _ = detector.detectMarkers(roi)
+    
+    return corners, ids
 
+def strict_detect_aruco_roi(roi, refine_method=cv2.aruco.CORNER_REFINE_SUBPIX, for_roi=False):
+    dictionary = cv2.aruco.getPredefinedDictionary(
+        cv2.aruco.DICT_ARUCO_MIP_36H12
+    )
+    
+    h, w = roi.shape[:2]
+    side = min(h, w)
+
+    params = cv2.aruco.DetectorParameters()
+
+    # refine góc
+    params.cornerRefinementMethod = refine_method
+    params.cornerRefinementWinSize = 7
+    params.cornerRefinementMaxIterations = 50
+    params.cornerRefinementMinAccuracy = 0.03
+    params.relativeCornerRefinmentWinSize = 0.4
+
+    # adaptive threshold
+    win_min = max(3, int(side * 0.10)); win_min += (win_min % 2 == 0)
+    win_max = max(win_min + 2, int(side * 0.9)); win_max += (win_max % 2 == 0)
+    step    = max(2, (win_max - win_min) // 8)
+    params.adaptiveThreshWinSizeMin  = win_min
+    params.adaptiveThreshWinSizeMax  = win_max
+    params.adaptiveThreshWinSizeStep = step
+    params.adaptiveThreshConstant    = 7
+
+    # lọc candidate chặt hơn
+    params.minMarkerPerimeterRate = 0.3
+    params.maxMarkerPerimeterRate = 2.2
+    params.polygonalApproxAccuracyRate = 0.05
+    params.minCornerDistanceRate = 0.03
+    params.minDistanceToBorder = 0
+    
+    params.perspectiveRemovePixelPerCell = max(4, int(side / 15))
+    params.perspectiveRemoveIgnoredMarginPerCell = 0.15
+
+    params.minSideLengthCanonicalImg = 16
+
+
+    params.markerBorderBits = 1
+    params.minOtsuStdDev = 0
+
+    params.errorCorrectionRate = 0.3
+
+    params.detectInvertedMarker = True
+
+    params.useAruco3Detection = True
+    params.maxErroneousBitsInBorderRate = 0.25
+
+
+    detector = cv2.aruco.ArucoDetector(dictionary, params)
+    corners, ids, _ = detector.detectMarkers(roi)
+    
     return corners, ids
 
 
@@ -158,43 +233,43 @@ def postprocess_candidates(image, candidates, model):
     results = []
 
     for candidate in candidates:
-        is_real, prob = is_real_marker(model, image, candidate)
+        is_real, prob = is_real_marker_consistent(model, image, candidate)
 
         if not is_real:
             continue
 
         roi, offset_x, offset_y = create_roi_with_padding(
             image,
-            candidate,
+            candidate["corners"],
             padding=PADDING
         )
+        
 
-        corners, ids = strict_detect_aruco(roi)
+        corners, ids = strict_detect_aruco_roi(roi)
 
         if ids is None:
             continue
 
         for marker_corners, marker_id in zip(corners, ids):
             pts = marker_corners[0]
-            pts = order_corners(pts)
-
+            
             top_left = pts[0]
 
-            x = int(top_left[0] + offset_x)
-            y = int(top_left[1] + offset_y)
+            # GIỮ NGUYÊN FLOAT - Không ép về int()
+            x = float(top_left[0] + offset_x)
+            y = float(top_left[1] + offset_y)
             marker_id = int(marker_id[0])
 
             results.append((marker_id, x, y))
 
     return results
 
-
-
 def format_output(results):
     output = []
-
-    for marker_id, x, y in results:
-        output.extend([str(marker_id), str(x), str(y)])
+    results_sorted = sorted(results, key=lambda item: item[0])
+    
+    for marker_id, x, y in results_sorted:
+        output.extend([str(marker_id), f"{x:.3f}", f"{y:.3f}"])
 
     return " ".join(output)
 
