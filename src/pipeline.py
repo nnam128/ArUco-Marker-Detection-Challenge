@@ -3,10 +3,10 @@ import numpy as np
 from src.preprocess import generate_augmented_images_strict,generate_augmented_images, aug_clahe_gamma_sharp, aug_gaussian_noise, aug_dilation, aug_erosion, aug_motion_blur
 from src.detector import extract_candidates, filter_and_cluster_candidates, map_corners_to_original
 from src.postprocess import (
-    load_cnn_model, 
-    is_real_marker_consistent, 
-    create_roi_with_padding, 
-    strict_detect_aruco, 
+    load_cnn_model,
+    is_real_marker_consistent,
+    create_roi_with_padding,
+    strict_detect_aruco,
     strict_detect_aruco_roi,
 )
 DUPLICATE_DISTANCE_THRESHOLD = 10
@@ -14,38 +14,38 @@ DUPLICATE_DISTANCE_THRESHOLD = 10
 def detect_id_in_roi_variants(roi_bgr):
     h, w = roi_bgr.shape[:2]
     gray = cv2.cvtColor(roi_bgr, cv2.COLOR_BGR2GRAY)
-
+    
     roi_2x  = cv2.resize(roi_bgr, (w*2, h*2), interpolation=cv2.INTER_CUBIC)
     roi_3x  = cv2.resize(roi_bgr, (w*3, h*3), interpolation=cv2.INTER_CUBIC)
     gray_2x = cv2.cvtColor(roi_2x, cv2.COLOR_BGR2GRAY)
     gray_3x = cv2.cvtColor(roi_3x, cv2.COLOR_BGR2GRAY)
-
+    
     # --- Helper ---
     def to_bgr(g):
         return cv2.cvtColor(g, cv2.COLOR_GRAY2BGR)
-
+    
     def gamma(g, val):
         return np.uint8(np.clip(
             np.power(g.astype(np.float32) / 255.0, 1.0 / val) * 255, 0, 255
         ))
-
+        
     def clahe(g, clip, grid):
         return cv2.createCLAHE(clipLimit=clip, tileGridSize=(grid, grid)).apply(g)
-
+    
     gray_norm    = cv2.normalize(gray,    None, 0, 255, cv2.NORM_MINMAX)
     gray_2x_norm = cv2.normalize(gray_2x, None, 0, 255, cv2.NORM_MINMAX)
     gray_3x_norm = cv2.normalize(gray_3x, None, 0, 255, cv2.NORM_MINMAX)
-
+    
     def adapt_gauss(g, win):
         return to_bgr(cv2.adaptiveThreshold(
             g, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, win, 2
         ))
-
+        
     def adapt_mean(g, win):
         return to_bgr(cv2.adaptiveThreshold(
             g, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY, win, 2
         ))
-
+        
     variants = [
 
         # =====================================================
@@ -201,23 +201,23 @@ def detect_id_in_roi_variants(roi_bgr):
     for variant, scale_factor in variants:
         if len(variant.shape) == 2:
             variant = cv2.cvtColor(variant, cv2.COLOR_GRAY2BGR)
-
+            
         corners, ids = strict_detect_aruco_roi(variant)
         if ids is not None:
             if scale_factor != 1.0:
                 corners = [c / scale_factor for c in corners]
             return corners, ids
-
+        
     return None, None
 
 
 def run_aruco_pipeline(image_path, model):
     image = cv2.imread(image_path)
     if image is None: return "Error: Image not found"
-
-
+    
+    
     final_results = {}
-
+    
     corners_orig, ids_orig = strict_detect_aruco(image)
     if ids_orig is not None:
         for c, mid in zip(corners_orig, ids_orig):
@@ -227,7 +227,7 @@ def run_aruco_pipeline(image_path, model):
                     final_results[m_id] = []
             #print(f"Found ID {m_id} in original image at position ({pts[0][0]:.2f}, {pts[0][1]:.2f})")
             final_results[m_id].append((float(pts[0][0]), float(pts[0][1])))
-
+            
     aug_dict = generate_augmented_images_strict(image)
     for name, data in aug_dict.items():
         if name == "original": continue
@@ -245,28 +245,28 @@ def run_aruco_pipeline(image_path, model):
                 
                 
                 should_add = True
-
+                
                 for old_x, old_y in final_results[m_id]:
                     dist = ((x - old_x) ** 2 + (y - old_y) ** 2) ** 0.5
-
+                    
                     if dist < DUPLICATE_DISTANCE_THRESHOLD:
                         should_add = False
                         break
-
+                    
                 if should_add:
                     #print(f"Found ID {m_id} in augmentation '{name}' at mapped position ({x:.2f}, {y:.2f})")
                     final_results[m_id].append((x, y))
-
+                    
     aug_dict = generate_augmented_images(image)
     raw_candidates = extract_candidates(image, aug_dict)
-    # Tăng min_votes nếu muốn bớt nhiễu, dist_thresh nên khớp với size marker dự kiến
+    
     final_candidates = filter_and_cluster_candidates(raw_candidates)
-
+    
     for cand in final_candidates:
         cand_tl = cand["corners"][0] 
         
         already_exists = False
-
+        
         for positions in final_results.values():
             for pos in positions:
                 if np.linalg.norm(cand_tl - np.array(pos)) < 40:
@@ -274,12 +274,12 @@ def run_aruco_pipeline(image_path, model):
                     break
             if already_exists:
                 break
-
+            
         if already_exists:
             continue
         
         is_real, prob = is_real_marker_consistent(model, image, cand, threshold=0.1)
-
+        
         if is_real:
             roi, offset_x, offset_y = create_roi_with_padding(image, cand["corners"], padding=10)
             corners_strict, ids_strict = detect_id_in_roi_variants(roi)
@@ -297,14 +297,14 @@ def run_aruco_pipeline(image_path, model):
                     
                     
                     should_add = True
-
+                    
                     for old_x, old_y in final_results[mid_val]:
                         dist = ((x - old_x) ** 2 + (y - old_y) ** 2) ** 0.5
-
+                        
                         if dist < DUPLICATE_DISTANCE_THRESHOLD:
                             should_add = False
                             break
-
+                        
                     if should_add:
                         #print(f"Found ID {mid_val} in candidate region with CNN prob {prob:.2f} at position ({x:.2f}, {y:.2f})")
                         final_results[mid_val].append((x, y))
