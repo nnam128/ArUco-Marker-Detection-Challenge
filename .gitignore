@@ -4,5 +4,7 @@ __pycache__/
 venv/
 .env
 submission.csv
-data/
+data/aruco_data/
+data/train/
+data/train.csv
 .DS_Store
