@@ -18,6 +18,13 @@ The project was developed for the Kaggle competition:
 
 https://www.kaggle.com/competitions/aruco-detection-challenge
 
+<h2>Demo Image</h2>
+
+<p align="center">
+  <img src="data/aruco_data/train/000000008747.jpg" width="48%" />
+  <img src="data/demo.png" width="48%" />
+</p>
+
 ---
 
 # Kaggle Result
